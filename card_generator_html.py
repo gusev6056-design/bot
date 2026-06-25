@@ -29,39 +29,26 @@ from card_templates import (
 
 def _html_to_png(html: str, width: int = 1080, extra_height: int = 0) -> io.BytesIO:
     """
-    Рендерит HTML через Playwright и возвращает PNG байты.
-    Создаёт свежий браузер на каждый вызов — единственный надёжный способ
-    работать в Gunicorn/greenlet окружении (Railway).
+    Рендерит HTML через отдельный subprocess (_render_worker.py).
+    Полностью изолирует Playwright от Flask/Gunicorn/greenlet окружения —
+    единственный способ избежать 'greenlet cannot switch to a different thread'.
     """
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        raise RuntimeError(
-            "playwright не установлен. Запусти:\n"
-            "  pip install playwright\n"
-            "  playwright install --with-deps chromium"
-        )
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            args=["--no-sandbox", "--disable-dev-shm-usage"]
-        )
-        try:
-            page = browser.new_page(viewport={"width": width + 40, "height": 800})
-            page.set_content(html, wait_until="networkidle")
-            try:
-                page.wait_for_load_state("networkidle", timeout=3000)
-            except Exception:
-                pass
-            body      = page.query_selector("body")
-            png_bytes = body.screenshot()
-            page.close()
-            return io.BytesIO(png_bytes)
-        finally:
-            browser.close()
+    import subprocess, os, sys
+    worker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_render_worker.py")
+    result = subprocess.run(
+        [sys.executable, worker, str(width + 40)],
+        input=html.encode("utf-8"),
+        capture_output=True,
+        timeout=60,
+    )
+    if result.returncode != 0:
+        err = result.stderr.decode("utf-8", errors="replace")
+        raise RuntimeError(f"Render subprocess failed:\n{err}")
+    return io.BytesIO(result.stdout)
 
 
 def close():
-    """No-op: браузер теперь создаётся и закрывается per-request."""
+    """No-op: рендер изолирован в subprocess."""
     pass
 
 
