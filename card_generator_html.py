@@ -27,30 +27,12 @@ from card_templates import (
     faceit_level, LEVEL_COLORS,
 )
 
-# ─── Playwright singleton ──────────────────────────────────────────────────────
-_playwright = None
-_browser    = None
-
-def _get_browser():
-    global _playwright, _browser
-    try:
-        if _browser is not None and _browser.is_connected():
-            return _browser
-    except Exception:
-        pass
-    # Recreate browser (first launch or after crash/disconnect)
-    try:
-        if _browser is not None:
-            _browser.close()
-    except Exception:
-        pass
-    try:
-        if _playwright is not None:
-            _playwright.stop()
-    except Exception:
-        pass
-    _browser    = None
-    _playwright = None
+def _html_to_png(html: str, width: int = 1080, extra_height: int = 0) -> io.BytesIO:
+    """
+    Рендерит HTML через Playwright и возвращает PNG байты.
+    Создаёт свежий браузер на каждый вызов — единственный надёжный способ
+    работать в Gunicorn/greenlet окружении (Railway).
+    """
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -59,42 +41,28 @@ def _get_browser():
             "  pip install playwright\n"
             "  playwright install --with-deps chromium"
         )
-    _playwright = sync_playwright().start()
-    _browser    = _playwright.chromium.launch(
-        args=["--no-sandbox", "--disable-dev-shm-usage"]
-    )
-    return _browser
-
-
-def _html_to_png(html: str, width: int = 1080, extra_height: int = 0) -> io.BytesIO:
-    """Рендерит HTML через Playwright и возвращает PNG байты."""
-    browser = _get_browser()
-    page    = browser.new_page(viewport={"width": width + 40, "height": 800})
-    page.set_content(html, wait_until="networkidle")
-
-    # подождём загрузку Google Fonts если есть интернет
-    try:
-        page.wait_for_load_state("networkidle", timeout=3000)
-    except Exception:
-        pass
-
-    # screenshot всего контента
-    body = page.query_selector("body")
-    png_bytes = body.screenshot()
-    page.close()
-
-    return io.BytesIO(png_bytes)
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            args=["--no-sandbox", "--disable-dev-shm-usage"]
+        )
+        try:
+            page = browser.new_page(viewport={"width": width + 40, "height": 800})
+            page.set_content(html, wait_until="networkidle")
+            try:
+                page.wait_for_load_state("networkidle", timeout=3000)
+            except Exception:
+                pass
+            body      = page.query_selector("body")
+            png_bytes = body.screenshot()
+            page.close()
+            return io.BytesIO(png_bytes)
+        finally:
+            browser.close()
 
 
 def close():
-    """Закрыть браузер (вызвать при завершении бота)."""
-    global _playwright, _browser
-    if _browser:
-        _browser.close()
-        _browser = None
-    if _playwright:
-        _playwright.stop()
-        _playwright = None
+    """No-op: браузер теперь создаётся и закрывается per-request."""
+    pass
 
 
 # ══════════════════════════════════════════════════════════════════════════════
